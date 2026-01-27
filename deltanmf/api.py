@@ -68,7 +68,7 @@ def calculate_adaptive_hyperparams_combined(
 
 def run_onestage_deltanmf(
     X_control, gene_names, S_E_PATH, S_E_GENES_PATH, K,
-    MIN_CELLS, REMOVE_GENES,
+    MIN_CELLS, REMOVE_GENES = [],
     USE_TPM = False, USE_MEDIAN = False, USE_UNITVAR = True, TPM_TARGET = 1e6,
     rel_alpha = 0.0, 
     max_iter = 10000, 
@@ -120,7 +120,7 @@ def run_onestage_deltanmf(
 
 def run_twostage_deltanmf(
     X_control, X_case, gene_names, S_E_PATH, S_E_GENES_PATH, K_stage1, K_stage2,
-    MIN_CELLS, REMOVE_GENES,
+    MIN_CELLS, REMOVE_GENES = [],
     USE_TPM = False, USE_MEDIAN = False, USE_UNITVAR = True, TPM_TARGET = 1e6,
     stage1_rel_alpha = 0.0, stage2_rel_alpha = 0.0, stage2_rel_gamma = 0.0,
     stage1_max_iter = 10000, stage2_max_iter = 10000,
