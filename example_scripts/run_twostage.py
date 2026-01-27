@@ -11,7 +11,7 @@ from deltanmf.io import h5ad_to_npy
 def main():
     repo_root = Path(__file__).resolve().parents[1]
 
-    h5ad_path = repo_root / "resources" / "test_data2.h5ad"
+    h5ad_path = repo_root / "resources" / "test_data.h5ad"
     out = repo_root / "resources" / "out"
     out.mkdir(parents=True, exist_ok=True)
 
