@@ -52,7 +52,7 @@ def solve_ntc_regularized(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
-    D_E = np.diag(np.sum(S_E, axis=1))
+    D_E = np.diag(np.sum(S_E, axis=1)) if S_E is not None else None
 
     # init scaling fix: L1-normalize W cols once, rescale H rows to keep WH
     if init_W is not None and init_H is not None and init_fix_scale:
@@ -146,6 +146,159 @@ def solve_ntc_regularized(
     with torch.no_grad():
         W_raw, H_raw = model()
         W_eff = _act(W_raw); H_eff = _act(H_raw)
+        if normalize_W:
+            s = W_eff.sum(dim=0, keepdim=True).clamp_min(eps)
+            W_eff = W_eff / s
+            H_eff = H_eff * s.squeeze(0).unsqueeze(1)
+
+    return W_eff.detach().cpu().numpy(), H_eff.detach().cpu().numpy(), pd.DataFrame(loss_history)
+
+def solve_ntc_regularized_minibatch(
+    X, k, S_E,
+    alpha_ntc=0.0,
+    init_W=None, init_H=None,
+    max_iter=1000, tol=1e-8,
+    nonneg="softplus", softplus_beta=10.0,
+    normalize_W=False,
+    init_fix_scale=False,
+    seed=None,
+    lr_start=0.01,
+    fm_target_ratio=None,
+    fm_apply_late=False,
+    fm_last_iters=None,
+    batch_size=40960
+):
+    """
+    Minibatched variant of solve_ntc_regularized.
+    X is expected to be (genes x cells). Returns (W, H, loss_history_df).
+    """
+    if seed is not None:
+        import random
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+    m, n = X.shape
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Keep X on CPU; move only minibatches to GPU
+    X_tensor_cpu = torch.tensor(X, dtype=torch.float32)
+
+    D_E = np.diag(np.sum(S_E, axis=1)) if S_E is not None else None
+
+    # init scaling fix: L1-normalize W cols once, rescale H rows to keep WH
+    if init_W is not None and init_H is not None and init_fix_scale:
+        W0 = torch.as_tensor(init_W, dtype=torch.float32)
+        H0 = torch.as_tensor(init_H, dtype=torch.float32)
+        s0 = W0.sum(dim=0, keepdim=True).clamp_min(1e-12)
+        W0 = W0 / s0
+        H0 = H0 * s0.squeeze(0).unsqueeze(1)
+        init_W = W0.cpu().numpy()
+        init_H = H0.cpu().numpy()
+
+    model = NTCOptimizer(m, n, k, init_W=init_W, init_H=init_H).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr_start)
+
+    L_S_tensor = None
+    if (S_E is not None) and (D_E is not None):
+        L_S_tensor = torch.tensor(D_E - S_E, dtype=torch.float32).to(device)
+
+    # choose nonnegativity activation
+    if nonneg.lower() == "relu":
+        def _act(t): return F.relu(t)
+    else:
+        def _act(t): return F.softplus(t, beta=softplus_beta)
+
+    loss_history = []
+    prev_loss = np.inf
+    pbar = trange(max_iter, desc="Regularized NTC Discovery (minibatch)", leave=False)
+    eps = torch.as_tensor(1e-12, dtype=torch.float32, device=device)
+
+    total_iters = int(max_iter)
+    _last = int(fm_last_iters) if (fm_last_iters is not None) else 0
+    fm_start_iter = (total_iters - _last) if (fm_apply_late and _last > 0) else 0
+    if fm_start_iter < 0:
+        fm_start_iter = 0
+
+    for epoch in pbar:
+        epoch_losses = {key: 0.0 for key in ["recon_loss", "fm_loss", "total_loss"]}
+        num_batches = 0
+        alpha_updated = False
+
+        permutation = torch.randperm(n)
+        for start in range(0, n, batch_size):
+            optimizer.zero_grad()
+
+            idx_cpu = permutation[start:start + batch_size]
+            X_b = X_tensor_cpu[:, idx_cpu].to(device)
+            idx_dev = idx_cpu.to(device)
+
+            W_raw, H_raw = model()
+            W_eff = _act(W_raw)
+            H_eff = _act(H_raw)
+
+            if normalize_W:
+                s = W_eff.sum(dim=0, keepdim=True).clamp_min(eps)
+                W_eff = W_eff / s
+                H_eff = H_eff * s.squeeze(0).unsqueeze(1)
+
+            H_b = H_eff[:, idx_dev]
+            recon_loss = torch.mean((X_b - W_eff @ H_b) ** 2)
+
+            alpha_t = torch.as_tensor(alpha_ntc, dtype=X_b.dtype, device=device)
+
+            if fm_apply_late and (epoch == fm_start_iter) and (not alpha_updated) and (fm_target_ratio is not None) and (L_S_tensor is not None):
+                fm_unscaled = torch.trace(W_eff.T @ L_S_tensor @ W_eff) / (m * k)
+                ru = float(recon_loss.item())
+                fu = float(fm_unscaled.item())
+                if fu > 0.0:
+                    alpha_ntc = float((fm_target_ratio * ru) / (fu + 1e-12))
+                    alpha_t = torch.as_tensor(alpha_ntc, dtype=X_b.dtype, device=device)
+                    alpha_updated = True
+
+            fm_loss = torch.zeros([], dtype=X_b.dtype, device=device)
+            if (alpha_ntc > 0) and (L_S_tensor is not None) and (epoch >= fm_start_iter):
+                # Scale by the batch fraction so FM weight matches full-batch objective.
+                batch_frac = float(idx_cpu.numel()) / float(n)
+                fm_loss = alpha_t * torch.trace(W_eff.T @ L_S_tensor @ W_eff) / (m * k)
+                fm_loss = fm_loss * batch_frac
+
+            total_loss = recon_loss + fm_loss
+            total_loss.backward()
+            optimizer.step()
+
+            epoch_losses["recon_loss"] += float(recon_loss.item())
+            epoch_losses["fm_loss"] += float(fm_loss.item())
+            epoch_losses["total_loss"] += float(total_loss.item())
+            num_batches += 1
+
+        avg_losses = {k: v / max(1, num_batches) for k, v in epoch_losses.items()}
+        cur_lr = optimizer.param_groups[0]["lr"]
+        cur = avg_losses["total_loss"]
+
+        loss_history.append({
+            "iteration": int(epoch),
+            "lr": float(cur_lr),
+            "total_loss": float(cur),
+            "recon_loss": float(avg_losses["recon_loss"]),
+            "fm_loss": float(avg_losses["fm_loss"]),
+            "alpha_ntc": float(alpha_ntc),
+            "alpha_updated": bool(alpha_updated),
+        })
+        pbar.set_postfix(loss=cur, lr=f"{cur_lr:.5f}")
+
+        if np.abs(prev_loss - cur) < tol * prev_loss:
+            break
+        prev_loss = cur
+
+    with torch.no_grad():
+        W_raw, H_raw = model()
+        W_eff = _act(W_raw)
+        H_eff = _act(H_raw)
         if normalize_W:
             s = W_eff.sum(dim=0, keepdim=True).clamp_min(eps)
             W_eff = W_eff / s

@@ -44,6 +44,10 @@ Then run:
 python scripts/run_onestage.py
 ```
 
+If you're calling the API directly, stage-1 NTC fitting can run in either mode:
+- full-batch (default): `use_minibatch_ntc=False`
+- minibatch over cells: `use_minibatch_ntc=True` and `minibatch_size_ntc=40960` (or your preferred size)
+
 ## Quickstart: Two-Stage (Case-Control)
 Edit `scripts/run_twostage.py` and set:
 - `h5ad_path`
@@ -56,6 +60,10 @@ Then run:
 ```bash
 python scripts/run_twostage.py
 ```
+
+Two-stage has the same stage-1 option:
+- full-batch baseline fitting: `stage1_use_minibatch_ntc=False`
+- minibatch baseline fitting: `stage1_use_minibatch_ntc=True` and `stage1_minibatch_size_ntc=40960`
 
 
 ## Resources: scGPT and TranscriptFormer Gene Similarity
