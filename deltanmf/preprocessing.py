@@ -47,6 +47,8 @@ def load_from_h5ad(h5ad_path, s_e_path, s_e_genes_path, control_key='target_gene
 
 def _build_gene_filter_mask(X_ntc, gene_names_full, min_cells=215, additional_genes_to_remove=None, X_specific=None):
     gene_names_full = np.asarray(gene_names_full)
+    n_input = len(gene_names_full)
+
     if X_specific is None:
         if min_cells > 0:
             gene_cell_counts = (X_ntc > 0).sum(axis=1)
@@ -60,6 +62,8 @@ def _build_gene_filter_mask(X_ntc, gene_names_full, min_cells=215, additional_ge
         else:
             mask = np.ones(len(gene_names_full), dtype=bool)
 
+    n_after_min_cells = int(mask.sum())
+
     if additional_genes_to_remove:
         remove = np.isin(gene_names_full, additional_genes_to_remove)
         mask &= ~remove
@@ -67,11 +71,18 @@ def _build_gene_filter_mask(X_ntc, gene_names_full, min_cells=215, additional_ge
     if mask.dtype != bool or mask.shape[0] != gene_names_full.shape[0]:
         raise ValueError(f"Mask shape/type mismatch: mask {mask.shape} bool? {mask.dtype==bool}, "
                          f"genes {gene_names_full.shape}")
-    return mask
+
+    filter_info = {
+        "input_genes": n_input,
+        "after_min_cells_filter": n_after_min_cells,
+        "after_manual_removal": int(mask.sum()),
+        "min_cells_threshold": min_cells,
+    }
+    return mask, filter_info
 
 def load_data_onestage_no_se(X, gene_names, min_cells=215, additional_genes_to_remove=None, verbose=False):
     hvg_gene_names_full = np.asarray(gene_names)
-    mask = _build_gene_filter_mask(
+    mask, filter_info = _build_gene_filter_mask(
         X_ntc=X,
         gene_names_full=hvg_gene_names_full,
         min_cells=min_cells,
@@ -81,11 +92,12 @@ def load_data_onestage_no_se(X, gene_names, min_cells=215, additional_genes_to_r
 
     X_aligned = X[mask, :]
     final_genes = hvg_gene_names_full[mask].astype(object, copy=False)
-    return X_aligned, final_genes
+    filter_info["after_se_intersection"] = len(final_genes)
+    return X_aligned, final_genes, filter_info
 
 def load_data_onestage(X, gene_names, s_e_path, s_e_genes_path, min_cells=215, additional_genes_to_remove=None, verbose=False):
     hvg_gene_names_full = np.asarray(gene_names)
-    mask = _build_gene_filter_mask(
+    mask, filter_info = _build_gene_filter_mask(
         X_ntc=X,
         gene_names_full=hvg_gene_names_full,
         min_cells=min_cells,
@@ -97,13 +109,13 @@ def load_data_onestage(X, gene_names, s_e_path, s_e_genes_path, min_cells=215, a
     X_aligned = X[mask, :]
     hvg_gene_names = hvg_gene_names_full[mask].tolist()
     print(f"DEBUG: Genes after min_cells filter: {len(hvg_gene_names)}")
-    
+
     S_E_full = np.load(s_e_path, mmap_mode="r")
     with open(s_e_genes_path, 'r') as f:
         s_e_full_genes_list = json.load(f)
-    
+
     print(f"DEBUG: Genes loaded from S_E_GENES_PATH: {len(s_e_full_genes_list)}")
-   
+
     # choose desired gene order
     x_index = pd.Index(hvg_gene_names)
     se_index = pd.Index(s_e_full_genes_list)
@@ -121,14 +133,15 @@ def load_data_onestage(X, gene_names, s_e_path, s_e_genes_path, min_cells=215, a
 
     X_aligned = X[x_indices, :]
     S_E_aligned = S_E_full[np.ix_(se_indices, se_indices)]
-    
-    return X_aligned, S_E_aligned, np.asarray(final_genes, dtype=object)
+
+    filter_info["after_se_intersection"] = len(final_genes)
+    return X_aligned, S_E_aligned, np.asarray(final_genes, dtype=object), filter_info
     
 def load_data_twostage(X_control, X_case, gene_names, s_e_path, s_e_genes_path, min_cells=215, additional_genes_to_remove=None, verbose=False):
     X_ntc_full = X_control
     X_specific_full = X_case
     hvg_gene_names_full = np.asarray(gene_names)
-    mask = _build_gene_filter_mask(
+    mask, filter_info = _build_gene_filter_mask(
         X_ntc=X_ntc_full,
         X_specific=X_specific_full,
         gene_names_full=hvg_gene_names_full,
@@ -142,13 +155,13 @@ def load_data_twostage(X_control, X_case, gene_names, s_e_path, s_e_genes_path, 
     del X_ntc_full, X_specific_full
     hvg_gene_names = hvg_gene_names_full[mask].tolist()
     print(f"DEBUG: Genes after min_cells filter: {len(hvg_gene_names)}")
-    
+
     S_E_full = np.load(s_e_path, mmap_mode="r")
     with open(s_e_genes_path, 'r') as f:
         s_e_full_genes_list = json.load(f)
-    
+
     print(f"DEBUG: Genes loaded from S_E_GENES_PATH: {len(s_e_full_genes_list)}")
-   
+
     # choose desired gene order
     x_index = pd.Index(hvg_gene_names)
     se_index = pd.Index(s_e_full_genes_list)
@@ -167,8 +180,9 @@ def load_data_twostage(X_control, X_case, gene_names, s_e_path, s_e_genes_path, 
     X_ntc_aligned = X_ntc[x_indices, :]
     X_specific_aligned = X_specific[x_indices, :]
     S_E_aligned = S_E_full[np.ix_(se_indices, se_indices)]
-    
-    return X_ntc_aligned, X_specific_aligned, S_E_aligned, np.asarray(final_genes, dtype=object)
+
+    filter_info["after_se_intersection"] = len(final_genes)
+    return X_ntc_aligned, X_specific_aligned, S_E_aligned, np.asarray(final_genes, dtype=object), filter_info
 
 def normalize_cells_to_median(matrix):
     # normalizes each cell (column) to have the same total count as the median cell

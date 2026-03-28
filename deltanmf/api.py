@@ -70,14 +70,15 @@ def run_onestage_deltanmf(
     X_control, gene_names, S_E_PATH=None, S_E_GENES_PATH=None, K=None,
     MIN_CELLS=None, REMOVE_GENES = [],
     USE_TPM = False, USE_MEDIAN = False, USE_UNITVAR = True, TPM_TARGET = 1e6,
-    rel_alpha = 0.0, 
-    max_iter = 10000, 
-    batchsize = 5506, 
+    rel_alpha = 0.0,
+    max_iter = 10000,
+    batchsize = 5506,
     warmup_n_runs = 5,
     FM_LAST_ITERS = 200,
     FM_NONNEG = "softplus", FM_SOFTPLUS_BETA = 5.0, lr = 0.01,
     use_minibatch_ntc = True, minibatch_size_ntc = 40960,
     use_fm = None,
+    control_barcodes = None,
     BASE_SEED = 1337):
     if K is None:
         raise ValueError("K must be provided for run_onestage_deltanmf")
@@ -92,14 +93,14 @@ def run_onestage_deltanmf(
     if use_fm:
         if S_E_PATH is None or S_E_GENES_PATH is None:
             raise ValueError("S_E_PATH and S_E_GENES_PATH are required when use_fm=True")
-        X_ntc, S_E_aligned, aligned_gene_names = preprocessing.load_data_onestage(
+        X_ntc, S_E_aligned, aligned_gene_names, filter_info = preprocessing.load_data_onestage(
             X_control, gene_names, S_E_PATH, S_E_GENES_PATH,
             min_cells=MIN_CELLS,
             additional_genes_to_remove=remove_genes_list,
             verbose=False
         )
     else:
-        X_ntc, aligned_gene_names = preprocessing.load_data_onestage_no_se(
+        X_ntc, aligned_gene_names, filter_info = preprocessing.load_data_onestage_no_se(
             X_control, gene_names,
             min_cells=MIN_CELLS,
             additional_genes_to_remove=remove_genes_list,
@@ -145,13 +146,17 @@ def run_onestage_deltanmf(
         ntc_kwargs["batch_size"] = int(minibatch_size_ntc)
     W_ntc, H_ntc, loss_fm = ntc_solver(**ntc_kwargs)
 
-    control_cell_ids = np.asarray([f"control_cell_{i}" for i in range(X_ntc.shape[1])], dtype=object)
+    if control_barcodes is not None:
+        control_cell_ids = np.asarray(control_barcodes, dtype=object)
+    else:
+        control_cell_ids = np.asarray([f"control_cell_{i}" for i in range(X_ntc.shape[1])], dtype=object)
 
     return {
         "W": W_ntc,
         "H": H_ntc,
         "gene_names_aligned": aligned_gene_names,
         "control_cell_ids": control_cell_ids,
+        "gene_filter_info": filter_info,
     }
 
 
@@ -161,15 +166,16 @@ def run_twostage_deltanmf(
     USE_TPM = False, USE_MEDIAN = False, USE_UNITVAR = True, TPM_TARGET = 1e6,
     stage1_rel_alpha = 0.0, stage2_rel_alpha = 0.0, stage2_rel_gamma = 0.0,
     stage1_max_iter = 10000, stage2_max_iter = 10000,
-    stage1_batchsize = 5506, stage2_batchsize = 40960, 
+    stage1_batchsize = 5506, stage2_batchsize = 40960,
     stage1_warmup_n_runs = 5, stage2_warmup_n_runs = 5,
     FM_LAST_ITERS = 200,
     FM_NONNEG = "softplus", FM_SOFTPLUS_BETA = 5.0, lr = 0.01,
     stage1_use_minibatch_ntc = True, stage1_minibatch_size_ntc = 40960,
     stage2_use_hybrid_memory = False,
+    ntc_barcodes = None, specific_barcodes = None,
     BASE_SEED = 1337):
     remove_genes_list = (REMOVE_GENES if len(REMOVE_GENES) > 0 else None)
-    X_ntc, X_spec, S_E_aligned, aligned_gene_names = preprocessing.load_data_twostage(
+    X_ntc, X_spec, S_E_aligned, aligned_gene_names, filter_info = preprocessing.load_data_twostage(
         X_control, X_case, gene_names, S_E_PATH, S_E_GENES_PATH,
         min_cells=MIN_CELLS,
         additional_genes_to_remove=remove_genes_list,
@@ -266,8 +272,14 @@ def run_twostage_deltanmf(
         nonneg=FM_NONNEG,
         softplus_beta=FM_SOFTPLUS_BETA
     )
-    ntc_cell_ids = np.asarray([f"ntc_cell_{i}" for i in range(X_ntc.shape[1])], dtype=object)
-    specific_cell_ids = np.asarray([f"specific_cell_{i}" for i in range(X_spec.shape[1])], dtype=object)
+    if ntc_barcodes is not None:
+        ntc_cell_ids = np.asarray(ntc_barcodes, dtype=object)
+    else:
+        ntc_cell_ids = np.asarray([f"ntc_cell_{i}" for i in range(X_ntc.shape[1])], dtype=object)
+    if specific_barcodes is not None:
+        specific_cell_ids = np.asarray(specific_barcodes, dtype=object)
+    else:
+        specific_cell_ids = np.asarray([f"specific_cell_{i}" for i in range(X_spec.shape[1])], dtype=object)
 
     return {
         "W_stage1": W_ntc,
@@ -277,4 +289,5 @@ def run_twostage_deltanmf(
         "gene_names_aligned": aligned_gene_names,
         "ntc_cell_ids": ntc_cell_ids,
         "specific_cell_ids": specific_cell_ids,
+        "gene_filter_info": filter_info,
     }
