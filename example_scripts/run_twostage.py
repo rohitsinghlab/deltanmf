@@ -1,7 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import anndata as ad
+
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -66,28 +66,18 @@ def main():
     gene_names_aligned = res["gene_names_aligned"]
     K1 = res["W_stage1"].shape[1]
     K2 = res["W_stage2"].shape[1]
-    program_names = [f"baseline_{i}" for i in range(K1)] + [f"case_{i}" for i in range(K2)]
+    baseline_names = [f"baseline_{i}" for i in range(K1)]
+    case_names = [f"case_{i}" for i in range(K2)]
+    program_names = baseline_names + case_names
     W_combined = np.hstack([res["W_stage1"], res["W_stage2"]])
 
-    adata_ntc = ad.AnnData(
-        X=res["H_stage1"].T,
-        obs=pd.DataFrame(index=res["ntc_cell_ids"]),
-        var=pd.DataFrame(index=[f"baseline_{i}" for i in range(K1)]),
-    )
-    adata_ntc.varm["W"] = res["W_stage1"].T
-    adata_ntc.uns["gene_names"] = list(gene_names_aligned)
-    adata_ntc.uns["gene_filter_info"] = res["gene_filter_info"]
-    adata_ntc.write_h5ad(out / "stage1_results.h5ad")
+    # H matrices: cells (rows) x programs (columns)
+    pd.DataFrame(res["H_stage1"].T, index=res["ntc_cell_ids"], columns=baseline_names).to_csv(out / "H_stage1.csv")
+    pd.DataFrame(res["H_stage2"].T, index=res["specific_cell_ids"], columns=program_names).to_csv(out / "H_stage2.csv")
 
-    adata_spec = ad.AnnData(
-        X=res["H_stage2"].T,
-        obs=pd.DataFrame(index=res["specific_cell_ids"]),
-        var=pd.DataFrame(index=program_names),
-    )
-    adata_spec.varm["W"] = W_combined.T
-    adata_spec.uns["gene_names"] = list(gene_names_aligned)
-    adata_spec.uns["gene_filter_info"] = res["gene_filter_info"]
-    adata_spec.write_h5ad(out / "stage2_results.h5ad")
+    # W matrices: genes (rows) x programs (columns)
+    pd.DataFrame(res["W_stage1"], index=gene_names_aligned, columns=baseline_names).to_csv(out / "W_stage1.csv")
+    pd.DataFrame(W_combined, index=gene_names_aligned, columns=program_names).to_csv(out / "W_combined.csv")
 
 
 if __name__ == "__main__":

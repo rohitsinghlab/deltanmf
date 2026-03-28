@@ -1,7 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import anndata as ad
+
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -70,15 +70,11 @@ def main():
     K = res["W"].shape[1]
     program_names = [f"program_{i}" for i in range(K)]
 
-    adata_out = ad.AnnData(
-        X=res["H"].T,
-        obs=pd.DataFrame(index=res["control_cell_ids"]),
-        var=pd.DataFrame(index=program_names),
-    )
-    adata_out.varm["W"] = res["W"].T
-    adata_out.uns["gene_names"] = list(gene_names_aligned)
-    adata_out.uns["gene_filter_info"] = res["gene_filter_info"]
-    adata_out.write_h5ad(out / "results.h5ad")
+    # H matrix: cells (rows) x programs (columns)
+    pd.DataFrame(res["H"].T, index=res["control_cell_ids"], columns=program_names).to_csv(out / "H.csv")
+
+    # W matrix: genes (rows) x programs (columns)
+    pd.DataFrame(res["W"], index=gene_names_aligned, columns=program_names).to_csv(out / "W.csv")
 
 
 if __name__ == "__main__":
