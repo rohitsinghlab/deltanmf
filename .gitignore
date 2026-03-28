@@ -1,3 +1,4 @@
 *.npy
 *.json
 *_scz.py
+__pycache__/

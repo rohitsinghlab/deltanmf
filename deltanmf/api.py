@@ -73,10 +73,10 @@ def run_onestage_deltanmf(
     rel_alpha = 0.0, 
     max_iter = 10000, 
     batchsize = 5506, 
-    warmup_n_runs = 20,
+    warmup_n_runs = 5,
     FM_LAST_ITERS = 200,
     FM_NONNEG = "softplus", FM_SOFTPLUS_BETA = 5.0, lr = 0.01,
-    use_minibatch_ntc = False, minibatch_size_ntc = 40960,
+    use_minibatch_ntc = True, minibatch_size_ntc = 40960,
     use_fm = None,
     BASE_SEED = 1337):
     if K is None:
@@ -162,10 +162,10 @@ def run_twostage_deltanmf(
     stage1_rel_alpha = 0.0, stage2_rel_alpha = 0.0, stage2_rel_gamma = 0.0,
     stage1_max_iter = 10000, stage2_max_iter = 10000,
     stage1_batchsize = 5506, stage2_batchsize = 40960, 
-    stage1_warmup_n_runs = 20, stage2_warmup_n_runs = 20,
+    stage1_warmup_n_runs = 5, stage2_warmup_n_runs = 5,
     FM_LAST_ITERS = 200,
     FM_NONNEG = "softplus", FM_SOFTPLUS_BETA = 5.0, lr = 0.01,
-    stage1_use_minibatch_ntc = False, stage1_minibatch_size_ntc = 40960,
+    stage1_use_minibatch_ntc = True, stage1_minibatch_size_ntc = 40960,
     stage2_use_hybrid_memory = False,
     BASE_SEED = 1337):
     remove_genes_list = (REMOVE_GENES if len(REMOVE_GENES) > 0 else None)
@@ -249,7 +249,7 @@ def run_twostage_deltanmf(
     )
 
     # fit W_specific on full X_spec with W_ntc fixed
-    stage2_solver = models.solve_specific_with_fixed_ntc_hybrid if stage2_use_hybrid_memory else models.solve_specific_with_fixed_ntc
+    stage2_solver = models.solve_specific_with_fixed_ntc_hybrid_fast if stage2_use_hybrid_memory else models.solve_specific_with_fixed_ntc
     W_spec_final, H_spec_final, loss_df = stage2_solver(
         X_specific=X_spec,
         W_ntc=W_ntc_bal,

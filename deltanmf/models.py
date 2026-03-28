@@ -260,16 +260,14 @@ def solve_ntc_regularized_minibatch(
                 H_idx = idx.to(device, non_blocking=True)
                 batch_n = idx.numel()
 
-            W_raw, H_raw = model()
-            W_eff = _act(W_raw)
-            H_eff = _act(H_raw)
+            W_eff = _act(model.W)
+            H_b = _act(model.H[:, H_idx])
 
             if normalize_W:
                 s = W_eff.sum(dim=0, keepdim=True).clamp_min(eps)
                 W_eff = W_eff / s
-                H_eff = H_eff * s.squeeze(0).unsqueeze(1)
-
-            H_b = H_eff[:, H_idx]
+                H_b = H_b * s.squeeze(0).unsqueeze(1)
+            
             recon_loss = torch.mean((X_b - W_eff @ H_b) ** 2)
 
             alpha_t = torch.as_tensor(alpha_ntc, dtype=X_b.dtype, device=device)
@@ -408,10 +406,10 @@ def solve_specific_with_fixed_ntc(
         for i in range(0, n_spec, batch_size):
             optimizer.zero_grad()
 
-            W_combined, H = model()
+            W_combined = torch.cat([_act(model.W_ntc_fixed), _act(model.W_spec)], dim=1)
             idx = permutation[i:i+batch_size]
             X_b = X_tensor[:, idx]
-            H_b = H[:, idx]
+            H_b = _act(model.H[:, idx])
 
             recon_loss = torch.mean((X_b - W_combined @ H_b)**2)
 
@@ -481,22 +479,14 @@ def solve_specific_with_fixed_ntc_hybrid(
     if init_W_specific is None or H_init is None:
         raise ValueError("init_W_specific and H_init must be provided for solve_specific_with_fixed_ntc_hybrid")
 
-    # Hybrid memory strategy:
-    # - Try full X_specific on device for fast on-device slicing.
-    # - Fall back to CPU-resident X_specific with per-batch transfers on OOM.
+    # Memory strategy:
+    # - Keep full X_specific on CPU.
+    # - On CUDA, transfer per-batch slices to device to preserve VRAM for backward.
     X_tensor_cpu = torch.tensor(X_specific, dtype=torch.float32)
     X_tensor = None
     x_on_device = False
     if device.type == "cuda":
-        try:
-            X_tensor = X_tensor_cpu.to(device)
-            x_on_device = True
-        except RuntimeError as err:
-            if "out of memory" in str(err).lower():
-                torch.cuda.empty_cache()
-                x_on_device = False
-            else:
-                raise
+        x_on_device = False
     else:
         X_tensor = X_tensor_cpu
         x_on_device = True
@@ -552,7 +542,7 @@ def solve_specific_with_fixed_ntc_hybrid(
         for i in range(0, n_spec, batch_size):
             optimizer.zero_grad()
 
-            W_combined, H = model()
+            W_combined = torch.cat([_act(model.W_ntc_fixed), _act(model.W_spec)], dim=1)
             idx = permutation[i:i+batch_size]
             if x_on_device:
                 X_b = X_tensor[:, idx]
@@ -560,7 +550,7 @@ def solve_specific_with_fixed_ntc_hybrid(
             else:
                 X_b = X_tensor_cpu[:, idx].to(device, non_blocking=True)
                 H_idx = idx.to(device, non_blocking=True)
-            H_b = H[:, H_idx]
+            H_b = _act(model.H[:, H_idx])
 
             recon_loss = torch.mean((X_b - W_combined @ H_b)**2)
 
@@ -600,4 +590,193 @@ def solve_specific_with_fixed_ntc_hybrid(
 
     W_final_spec = _act(model.W_spec).detach().cpu().numpy()
     H_final = _act(model.H).detach().cpu().numpy()
+    return W_final_spec, H_final, pd.DataFrame(loss_history)
+
+def solve_specific_with_fixed_ntc_hybrid_fast(
+    X_specific, W_ntc, k_specific, S_E, hyperparameters,
+    guide_aggregation_map=None, epochs=200, lr_W_specific=0.01,
+    tol=1e-8, batch_size=40960,
+    init_W_specific=None, H_init=None,
+    nonneg="softplus", softplus_beta=5.0
+):
+    """
+    Hybrid-memory variant of solve_specific_with_fixed_ntc.
+    Tries full X on GPU first; falls back to per-batch CPU->GPU transfer on OOM.
+    """
+    m, n_spec = X_specific.shape
+    k_ntc = W_ntc.shape[1]
+
+    D_E = np.diag(np.sum(S_E, axis=1))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if nonneg.lower() == "relu":
+        def _act(t): return F.relu(t)
+    else:
+        def _act(t): return F.softplus(t, beta=softplus_beta)
+
+    W_ntc_used = W_ntc.copy()
+
+    if init_W_specific is None or H_init is None:
+        raise ValueError("init_W_specific and H_init must be provided for solve_specific_with_fixed_ntc_hybrid")
+
+    X_np = np.ascontiguousarray(X_specific, dtype=np.float32)
+    X_gpu = None
+    X_T = None
+    X_pin = None
+    x_on_device = False
+
+    _x_bytes = m * n_spec * 4
+    print(f"[hybrid_fast] X shape=({m}, {n_spec}), X_bytes={_x_bytes / 1e9:.2f} GB, "
+          f"requested batch_size={batch_size}, device={device}", flush=True)
+
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+        try:
+            X_gpu = torch.tensor(X_np, dtype=torch.float32, device=device)
+            free_mem, total_mem = torch.cuda.mem_get_info()
+            free_ratio = free_mem / total_mem
+            _k_total = W_ntc.shape[1] + k_specific
+            _model_bytes = 4 * (m * k_specific + _k_total * n_spec) * 4
+            _safety = 1024 * 1024 * 1024
+            _per_col_peak = 8 * m * 4
+            _remaining = free_mem - _model_bytes - _safety
+            print(f"[hybrid_fast] X on GPU. free={free_mem/1e9:.2f} GB ({free_ratio:.1%}), "
+                  f"total={total_mem/1e9:.2f} GB, model_est={_model_bytes/1e9:.2f} GB, "
+                  f"remaining={_remaining/1e9:.2f} GB", flush=True)
+            if free_ratio >= 0.40 and _remaining >= _per_col_peak * 128:
+                max_bs = int(_remaining // _per_col_peak)
+                if max_bs < batch_size:
+                    print(f"[hybrid_fast] Tier-1: reducing batch_size {batch_size} -> {max_bs}", flush=True)
+                    batch_size = max_bs
+                else:
+                    print(f"[hybrid_fast] Tier-1: batch_size {batch_size} fits (max_bs={max_bs})", flush=True)
+                x_on_device = True
+            else:
+                print(f"[hybrid_fast] Free ratio {free_ratio:.1%} < 40%, falling back to Tier-2", flush=True)
+                del X_gpu
+                torch.cuda.empty_cache()
+                X_gpu = None
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                print(f"[hybrid_fast] X_gpu OOM, falling back to Tier-2", flush=True)
+                torch.cuda.empty_cache()
+            else:
+                raise
+    if not x_on_device and device.type == "cuda":
+        print(f"[hybrid_fast] Tier-2: CPU batches with pinned memory", flush=True)
+        X_T = np.ascontiguousarray(X_np.T)
+        _actual_bs = min(batch_size, n_spec)
+        X_pin = torch.empty(m, _actual_bs, dtype=torch.float32, pin_memory=True)
+    elif not x_on_device:
+        X_gpu = torch.from_numpy(X_np)
+        x_on_device = True
+
+    W_ntc_const = torch.tensor(W_ntc_used, dtype=torch.float32, device=device)
+
+    L_S_tensor = None
+    if hyperparameters.get("alpha_fm", 0.0) > 0 and S_E is not None and D_E is not None:
+        L_S_tensor = torch.tensor(D_E - S_E, dtype=torch.float32).to(device)
+
+    guide_agg_map_tensor = None
+    if guide_aggregation_map is not None:
+        M = guide_aggregation_map.tocoo()
+        guide_agg_map_tensor = torch.sparse_coo_tensor(
+            indices=torch.from_numpy(np.vstack((M.row, M.col))),
+            values=torch.from_numpy(M.data),
+            size=M.shape
+        ).to(device, dtype=torch.float32)
+
+    class FixedNTCOptimizer(nn.Module):
+        def __init__(self, W_ntc_fixed, W_spec_init, H_init_full):
+            super().__init__()
+            self.W_ntc_fixed = W_ntc_fixed
+            self.W_spec = nn.Parameter(torch.tensor(W_spec_init, dtype=torch.float32))
+            self.H = nn.Parameter(torch.tensor(H_init_full, dtype=torch.float32))
+
+    model = FixedNTCOptimizer(W_ntc_const, init_W_specific, H_init).to(device)
+
+    optimizer = optim.Adam([
+        {'params': [model.W_spec], 'lr': lr_W_specific},
+        {'params': [model.H], 'lr': lr_W_specific}
+    ])
+
+    alpha_fm = float(hyperparameters.get("alpha_fm", 0.0))
+    gamma    = float(hyperparameters.get("gamma", 0.0))
+    eps = 1e-12
+
+    rng = np.random.default_rng(42)
+
+    loss_history = []
+    prev_loss = np.inf
+    pbar = trange(epochs, desc="Specific-with-Fixed-NTC (hybrid)", leave=False)
+
+    for epoch in pbar:
+        epoch_losses = {k: 0.0 for k in ['recon_loss', 'fm_loss', 'ortho_loss', 'total_loss']}
+        num_batches = 0
+
+        perm_np = rng.permutation(n_spec)
+        if x_on_device:
+            perm_dev = torch.tensor(perm_np, dtype=torch.long, device=device)
+
+        for i in range(0, n_spec, batch_size):
+            optimizer.zero_grad()
+
+            W_combined = torch.cat([_act(model.W_ntc_fixed), _act(model.W_spec)], dim=1)
+
+            if x_on_device:
+                idx = perm_dev[i:i+batch_size]
+                X_b = X_gpu[:, idx]
+            else:
+                batch_idx = perm_np[i:i+batch_size]
+                actual_bs = len(batch_idx)
+                rows = torch.from_numpy(X_T[batch_idx])
+                X_pin[:, :actual_bs].copy_(rows.T)
+                X_b = X_pin[:, :actual_bs].to(device, non_blocking=True)
+                idx = torch.tensor(batch_idx, dtype=torch.long, device=device)
+            H_b = _act(model.H[:, idx])
+
+            diff = X_b - W_combined @ H_b
+            del X_b
+            recon_loss = diff.pow(2).mean()
+            del diff
+
+            fm_loss = torch.zeros((), dtype=torch.float32, device=device)
+            ortho_loss = torch.zeros((), dtype=torch.float32, device=device)
+
+            if alpha_fm > 0 and L_S_tensor is not None:
+                W_spec_part = W_combined[:, k_ntc:]
+                fm_loss = alpha_fm * torch.trace(W_spec_part.T @ L_S_tensor @ W_spec_part) / (m * k_specific)
+
+            if gamma > 0:
+                W_ntc_part = W_combined[:, :k_ntc]
+                W_spec_part = W_combined[:, k_ntc:]
+                W_ntc_norm = F.normalize(W_ntc_part, p=2, dim=0)
+                W_spec_norm = F.normalize(W_spec_part, p=2, dim=0)
+                ortho_loss = gamma * torch.mean((W_ntc_norm.T @ W_spec_norm)**2)
+
+            total_loss = recon_loss + fm_loss + ortho_loss
+            if x_on_device and device.type == "cuda":
+                torch.cuda.empty_cache()
+            total_loss.backward()
+            optimizer.step()
+
+            epoch_losses['recon_loss'] += float(recon_loss.item())
+            epoch_losses['fm_loss'] += float(fm_loss.item())
+            epoch_losses['ortho_loss'] += float(ortho_loss.item())
+            epoch_losses['total_loss'] += float(total_loss.item())
+            num_batches += 1
+
+        avg_losses = {k: v / max(1, num_batches) for k, v in epoch_losses.items()}
+        avg_losses['epoch'] = int(epoch)
+        loss_history.append(avg_losses)
+        pbar.set_postfix(loss=avg_losses['total_loss'])
+
+        cur = avg_losses['total_loss']
+        if np.abs(prev_loss - cur) < tol * max(prev_loss, 1.0):
+            break
+        prev_loss = cur
+
+    with torch.no_grad():
+        W_final_spec = _act(model.W_spec).detach().cpu().numpy()
+        H_final = _act(model.H).detach().cpu().numpy()
     return W_final_spec, H_final, pd.DataFrame(loss_history)

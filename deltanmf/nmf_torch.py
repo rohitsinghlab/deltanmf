@@ -86,6 +86,12 @@ def nmf_gpu_minibatch(
     history = {"epoch": [], "proxy_objective": []}
     column_indices = np.arange(n_cells, dtype=np.int64)
 
+    full_on_device = (batch_size >= n_cells)
+    if full_on_device:
+        X_device = torch.from_numpy(
+            X.toarray() if sp.issparse(X) else np.asarray(X, dtype=np.float32)
+        ).to(device=device, dtype=dtype)
+
     iterator = trange(epochs, desc="NMF Replicate", leave=False) if verbose else range(epochs)
 
     for epoch in iterator:
@@ -99,7 +105,11 @@ def nmf_gpu_minibatch(
         for start in range(0, n_cells, batch_size):
             end = min(start + batch_size, n_cells)
             idx = column_indices[start:end]
-            Xb = torch.from_numpy(_to_dense_batch(X, idx)).to(device=device, dtype=dtype)
+            if full_on_device:
+                Xb = X_device
+            else:
+                Xb = torch.from_numpy(_to_dense_batch(X, idx)).to(device=device, dtype=dtype)
+            #Xb = torch.from_numpy(_to_dense_batch(X, idx)).to(device=device, dtype=dtype)
             
             Hb_cache = _solve_H_batch_mu(W, Xb, Hb_cache, inner_iters=h_inner_iters, gen=g)
 

@@ -65,6 +65,16 @@ Two-stage has the same stage-1 option:
 - full-batch baseline fitting: `stage1_use_minibatch_ntc=False`
 - minibatch baseline fitting: `stage1_use_minibatch_ntc=True` and `stage1_minibatch_size_ntc=40960`
 
+**Stage-2 memory mode** (`stage2_use_hybrid_memory`, default `False`):
+
+By default, stage 2 uses the standard GPU solver (`solve_specific_with_fixed_ntc`), which loads the entire `X_spec` matrix into VRAM upfront. This is simple and fast but will OOM if `X_spec` is too large to fit alongside the model parameters.
+
+For large case matrices, set `stage2_use_hybrid_memory=True` to use a memory-aware GPU solver (`solve_specific_with_fixed_ntc_hybrid_fast`) that adapts to available VRAM:
+1. **Tier 1** — keeps `X_spec` on GPU (like the default solver) but auto-tunes the batch size based on remaining VRAM after model allocation
+2. **Tier 2** — if VRAM is insufficient (< 40 % free or OOM), keeps `X_spec` on CPU and streams batches to GPU via pinned memory
+
+The solver prints VRAM diagnostics at startup so you can see which tier was selected. Use this when your case matrix is large enough that the default solver OOMs.
+
 
 ## Resources: scGPT and TranscriptFormer Gene Similarity
 
