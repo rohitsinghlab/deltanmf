@@ -28,20 +28,26 @@ def main():
     resources = repo_root / "resources"
     S_E_PATH = resources / "scgpt" / "S_E_relu.npy" # can replace scgpt with transcriptformer
     S_E_GENES_PATH = resources / "scgpt" / "genes_order.json" # can replace scgpt with transcriptformer
+    USE_FM = True
 
     if not h5ad_path.exists():
         raise FileNotFoundError(f"Missing: {h5ad_path}")
-    if not S_E_PATH.exists():
-        raise FileNotFoundError(f"Missing: {S_E_PATH}")
-    if not S_E_GENES_PATH.exists():
-        raise FileNotFoundError(f"Missing: {S_E_GENES_PATH}")
+    if USE_FM:
+        if not S_E_PATH.exists():
+            raise FileNotFoundError(f"Missing: {S_E_PATH}")
+        if not S_E_GENES_PATH.exists():
+            raise FileNotFoundError(f"Missing: {S_E_GENES_PATH}")
+    else:
+        S_E_PATH = None
+        S_E_GENES_PATH = None
 
     res = run_twostage_deltanmf(
         X_ntc, X_spec, gene_names, S_E_PATH, S_E_GENES_PATH,
         K_stage1=30, K_stage2=60,
         MIN_CELLS=10,
-        stage1_rel_alpha=0.0,
-        stage2_rel_alpha=0.0,
+        use_fm=USE_FM,
+        stage1_rel_alpha=(0.05 if USE_FM else 0.0),
+        stage2_rel_alpha=(0.05 if USE_FM else 0.0),
         stage2_rel_gamma=0.0,
         stage1_max_iter=10000,
         stage2_max_iter=10000,

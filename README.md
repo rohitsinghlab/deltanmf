@@ -65,6 +65,15 @@ Two-stage has the same stage-1 option:
 - full-batch baseline fitting: `stage1_use_minibatch_ntc=False`
 - minibatch baseline fitting: `stage1_use_minibatch_ntc=True` and `stage1_minibatch_size_ntc=40960`
 
+**Running without foundation-model regularization** (`use_fm`, default `True`):
+
+Both `run_onestage_deltanmf` and `run_twostage_deltanmf` accept a `use_fm` flag. When `use_fm=False`, the FM Laplacian term is disabled entirely: `S_E` is never loaded, the gene set is not intersected with `S_E`'s gene list, and the solver runs plain (regularizer-free, aside from non-negativity) NMF / two-stage case-control NMF. Use this when you want a pure-data baseline, lack a precomputed `S_E`, or want to compare against the FM-regularized variant.
+
+- One-stage: `run_onestage_deltanmf(..., use_fm=False)` — `S_E_PATH`/`S_E_GENES_PATH` may be omitted.
+- Two-stage: `run_twostage_deltanmf(..., use_fm=False)` — `S_E_PATH`/`S_E_GENES_PATH` may be omitted; `stage1_rel_alpha`, `stage2_rel_alpha`, `stage2_rel_gamma` are ignored.
+
+Default (`use_fm=True`) preserves the existing behavior: `S_E` is loaded, genes are intersected with `S_E`'s gene list, and FM regularization is applied according to the `rel_alpha`/`rel_gamma` parameters.
+
 **Stage-2 memory mode** (`stage2_use_hybrid_memory`, default `False`):
 
 By default, stage 2 uses the standard GPU solver (`solve_specific_with_fixed_ntc`), which loads the entire `X_spec` matrix into VRAM upfront. This is simple and fast but will OOM if `X_spec` is too large to fit alongside the model parameters.

@@ -42,9 +42,12 @@ def calculate_adaptive_hyperparams_combined(
     W_ntc = W0[:, :k_ntc]
     W_spec = W0[:, k_ntc:]
 
-    D_E = np.diag(np.sum(S_E, axis=1))
-    L_S = D_E - S_E
-    unscaled_fm = np.trace(W_spec.T @ L_S @ W_spec) / (m * max(1, k_spec))
+    if S_E is not None:
+        D_E = np.diag(np.sum(S_E, axis=1))
+        L_S = D_E - S_E
+        unscaled_fm = np.trace(W_spec.T @ L_S @ W_spec) / (m * max(1, k_spec))
+    else:
+        unscaled_fm = 0.0
 
     Wn_ntc = W_ntc / (np.linalg.norm(W_ntc, axis=0) + eps)
     Wn_spec = W_spec / (np.linalg.norm(W_spec, axis=0) + eps)
@@ -172,15 +175,25 @@ def run_twostage_deltanmf(
     FM_NONNEG = "softplus", FM_SOFTPLUS_BETA = 5.0, lr = 0.01,
     stage1_use_minibatch_ntc = True, stage1_minibatch_size_ntc = 40960,
     stage2_use_hybrid_memory = False,
+    use_fm = True,
     ntc_barcodes = None, specific_barcodes = None,
     BASE_SEED = 1337):
     remove_genes_list = (REMOVE_GENES if len(REMOVE_GENES) > 0 else None)
-    X_ntc, X_spec, S_E_aligned, aligned_gene_names, filter_info = preprocessing.load_data_twostage(
-        X_control, X_case, gene_names, S_E_PATH, S_E_GENES_PATH,
-        min_cells=MIN_CELLS,
-        additional_genes_to_remove=remove_genes_list,
-        verbose=False
-    )
+    if use_fm:
+        X_ntc, X_spec, S_E_aligned, aligned_gene_names, filter_info = preprocessing.load_data_twostage(
+            X_control, X_case, gene_names, S_E_PATH, S_E_GENES_PATH,
+            min_cells=MIN_CELLS,
+            additional_genes_to_remove=remove_genes_list,
+            verbose=False
+        )
+    else:
+        X_ntc, X_spec, aligned_gene_names, filter_info = preprocessing.load_data_twostage_no_se(
+            X_control, X_case, gene_names,
+            min_cells=MIN_CELLS,
+            additional_genes_to_remove=remove_genes_list,
+            verbose=False
+        )
+        S_E_aligned = None
 
     X_ntc = pipeline_utils.apply_normalization(X_ntc, USE_TPM, USE_MEDIAN, USE_UNITVAR, TPM_TARGET).astype(np.float32, copy=False)
     X_spec = pipeline_utils.apply_normalization(X_spec, USE_TPM, USE_MEDIAN, USE_UNITVAR, TPM_TARGET).astype(np.float32, copy=False)
@@ -194,12 +207,15 @@ def run_twostage_deltanmf(
 
     W_init, H_init = pipeline_utils.build_init_from_H(X_ntc, H_cons.copy())
 
-    alpha_params = calculate_adaptive_hyperparams(
-        X_ntc, S_E_aligned, K_stage1,
-        {"relative_strength_alpha": stage1_rel_alpha},
-        init_W=W_init, init_H=H_init
-    )
-    alpha_val = alpha_params["alpha_ntc"]
+    if use_fm:
+        alpha_params = calculate_adaptive_hyperparams(
+            X_ntc, S_E_aligned, K_stage1,
+            {"relative_strength_alpha": stage1_rel_alpha},
+            init_W=W_init, init_H=H_init
+        )
+        alpha_val = alpha_params["alpha_ntc"]
+    else:
+        alpha_val = 0.0
 
     ntc_solver = models.solve_ntc_regularized_minibatch if stage1_use_minibatch_ntc else models.solve_ntc_regularized
     ntc_kwargs = dict(
@@ -210,8 +226,9 @@ def run_twostage_deltanmf(
         nonneg=FM_NONNEG, softplus_beta=FM_SOFTPLUS_BETA,
         normalize_W=False, init_fix_scale=False,
         seed=BASE_SEED,
-        lr_start=lr, fm_target_ratio=stage1_rel_alpha,
-        fm_apply_late=True, fm_last_iters=FM_LAST_ITERS
+        lr_start=lr,
+        fm_target_ratio=(stage1_rel_alpha if use_fm else None),
+        fm_apply_late=bool(use_fm), fm_last_iters=FM_LAST_ITERS
     )
     if stage1_use_minibatch_ntc:
         ntc_kwargs["batch_size"] = int(stage1_minibatch_size_ntc)

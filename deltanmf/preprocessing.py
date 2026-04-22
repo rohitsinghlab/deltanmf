@@ -184,6 +184,21 @@ def load_data_twostage(X_control, X_case, gene_names, s_e_path, s_e_genes_path, 
     filter_info["after_se_intersection"] = len(final_genes)
     return X_ntc_aligned, X_specific_aligned, S_E_aligned, np.asarray(final_genes, dtype=object), filter_info
 
+def load_data_twostage_no_se(X_control, X_case, gene_names, min_cells=215, additional_genes_to_remove=None, verbose=False):
+    hvg_gene_names_full = np.asarray(gene_names)
+    mask, filter_info = _build_gene_filter_mask(
+        X_ntc=X_control,
+        X_specific=X_case,
+        gene_names_full=hvg_gene_names_full,
+        min_cells=min_cells,
+        additional_genes_to_remove=additional_genes_to_remove,
+    )
+    X_ntc = X_control[mask, :]
+    X_specific = X_case[mask, :]
+    final_genes = hvg_gene_names_full[mask].astype(object, copy=False)
+    filter_info["after_se_intersection"] = len(final_genes)
+    return X_ntc, X_specific, final_genes, filter_info
+
 def normalize_cells_to_median(matrix):
     # normalizes each cell (column) to have the same total count as the median cell
     cell_sums = matrix.sum(axis=0)

@@ -341,7 +341,7 @@ def solve_specific_with_fixed_ntc(
     m, n_spec = X_specific.shape
     k_ntc = W_ntc.shape[1]
 
-    D_E = np.diag(np.sum(S_E, axis=1))
+    D_E = np.diag(np.sum(S_E, axis=1)) if S_E is not None else None
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if nonneg.lower() == "relu":
@@ -466,7 +466,7 @@ def solve_specific_with_fixed_ntc_hybrid(
     m, n_spec = X_specific.shape
     k_ntc = W_ntc.shape[1]
 
-    D_E = np.diag(np.sum(S_E, axis=1))
+    D_E = np.diag(np.sum(S_E, axis=1)) if S_E is not None else None
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if nonneg.lower() == "relu":
@@ -606,7 +606,7 @@ def solve_specific_with_fixed_ntc_hybrid_fast(
     m, n_spec = X_specific.shape
     k_ntc = W_ntc.shape[1]
 
-    D_E = np.diag(np.sum(S_E, axis=1))
+    D_E = np.diag(np.sum(S_E, axis=1)) if S_E is not None else None
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if nonneg.lower() == "relu":
